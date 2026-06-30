@@ -666,6 +666,7 @@ function createEmptySegmentationSnapshot() {
       rowBounds: createEmptyRowBounds(0, 0),
       center: { x: 0, y: 0 },
       bounds: null,
+      width: 0,
       height: 0,
       representativeHalfWidth: 0,
       pixelCount: 0,
@@ -745,6 +746,7 @@ function buildSegmentationSnapshot(segmentationResult, frameWidth, frameHeight, 
       }
     : { x: 0, y: 0 };
   const headHeight = headPixelCount ? headMaxY - headMinY + 1 : 0;
+  const headWidth = headPixelCount ? headMaxX - headMinX + 1 : 0;
   const representativeHalfWidth = headPixelCount
     ? Math.max(headCenter.x - headMinX, headMaxX - headCenter.x, 1)
     : 0;
@@ -769,6 +771,7 @@ function buildSegmentationSnapshot(segmentationResult, frameWidth, frameHeight, 
             maxY: headMaxY,
           }
         : null,
+      width: headWidth,
       height: headHeight,
       representativeHalfWidth,
       pixelCount: headPixelCount,
@@ -1182,8 +1185,9 @@ function drawWarpedHeadRows(sourceData, personData, frameWidth, frameHeight, hea
   // 頭部マスクの各行を、代表中心から見た相対位置で再サンプリングする。
   // 四角・三角の違いは targetHalfWidthForRow だけに閉じ込める。
   // headXOffset は元の頭部を読む位置ではなく、変形後の頭部を置く位置だけを左右に動かす。
+  const headWidth = headMask.width || headMask.bounds.maxX - headMask.bounds.minX + 1;
   const targetCenterX = clamp(
-    headMask.center.x + headMask.width * (params.headXOffset || 0),
+    headMask.center.x + headWidth * (params.headXOffset || 0),
     0,
     frameWidth - 1
   );
