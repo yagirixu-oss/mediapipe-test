@@ -1,24 +1,39 @@
 # MediaPipe Web Face FX Studio
 
-VS Code の Go Live でそのまま動かせる、静的な JavaScript 版 MediaPipe 頭部加工デモ。
+VS Code の Go Live でそのまま動かせる、静的な JavaScript 版 MediaPipe 顔加工デモ。
+友人へ送る場合は、この `mediapipe_web_face_fx` フォルダごと渡せばよい。
 
 ## 何を作ったか
 
 Python の `run_vision_demo.py` / `run_all_in_one_demo.py` は、MediaPipe を触るためのローカル実験コードだった。
 チーム用途では Web アプリ化が前提なので、このフォルダでは顔加工アプリ寄りに寄せて作り直している。
 
-今回は用途に合わせて、`HandLandmarker` / `PoseLandmarker` は入れていない。
-SNOW 系の土台として最初に重要なのは、顔の基準点を取り、Canvas 上でエフェクトを追加しやすい構成を作ることだから。
+今回は用途に合わせて、`Face Landmarker` と `Image Segmenter` を使っている。
+SNOW 系の土台として、顔の基準点取得、頭部マスク取得、Canvas 上のエフェクト差し込み、一時保存ギャラリーをまとめて確認できる。
 
 ## 機能
 
 - Web カメラのライブ顔トラッキング
 - 画像アップロードに対する頭部加工確認
 - Face Landmarker による顔ランドマーク取得
-- 顔より大きい正方形 ROI を使ったスクエア頭部変形
+- Image Segmenter による頭部マスク取得
+- PNG ステッカー貼り付け
+- スクエア頭部変形
+- 三角頭部変形
 - blendshape の円グラフ表示
-- 現在プレビューの PNG 保存
+- 撮影結果の一時ギャラリー保存
+- 選択した一時保存画像の PNG 保存
 - `effects` 配列によるエフェクト管理
+
+## 友人側で必要なもの
+
+- VS Code
+- VS Code 拡張機能の Live Server / Go Live
+- Chrome または Edge などのカメラ対応ブラウザ
+- インターネット接続
+
+MediaPipe 本体、WASM、顔モデル、セグメンテーションモデルは CDN / Google Storage から読む。
+そのため、初回起動時やネットがない環境では動かない。
 
 ## Go Live での起動
 
@@ -28,6 +43,15 @@ SNOW 系の土台として最初に重要なのは、顔の基準点を取り、
 4. ブラウザで開かれたページ上で `カメラ開始` を押す
 
 `localhost` / `127.0.0.1` 上で開かれるので、カメラ権限もそのまま扱いやすい。
+`index.html` をダブルクリックして直接開く方法は、ブラウザの制限でカメラや ES module が不安定になるため避ける。
+
+## 送るときの注意
+
+- `mediapipe_web_face_fx` フォルダを ZIP にして送る
+- 友人側で ZIP を展開してから VS Code で開く
+- `index.html` を Go Live で起動する
+- ブラウザでカメラ許可を求められたら許可する
+- 起動直後に少し待つ。MediaPipe モデルの読み込みが終わるまで時間がかかることがある
 
 ## ファイル構成
 
@@ -36,13 +60,14 @@ SNOW 系の土台として最初に重要なのは、顔の基準点を取り、
 - [styles.css](/C:/Users/yagir/Desktop/AI/mediapipe_web_face_fx/styles.css)
   見た目
 - [app.js](/C:/Users/yagir/Desktop/AI/mediapipe_web_face_fx/app.js)
-  Face Landmarker 初期化、カメラ処理、画像解析、エフェクト登録、頭部ワープ描画
+  MediaPipe 初期化、カメラ処理、画像解析、エフェクト登録、ギャラリー保存、Canvas 描画
 
 ## 実装方針
 
 - ビルド不要
 - CDN の `@mediapipe/tasks-vision` を利用
 - 公式 Face Landmarker モデルを直接読む
+- 公式 Image Segmenter モデルを直接読む
 - 1 face 前提で、顔加工の試作に必要な構成へ絞る
 - MediaPipe は顔の基準点取得に使い、加工は Canvas エフェクトとして追加する
 
@@ -92,7 +117,7 @@ UI で ON/OFF やスライダーを追加したい場合は、HTML の input に
 
 ## 次に足しやすいもの
 
-- フィルタ画像 PNG の重ね合わせ
+- PNG 素材を外部ファイルとして読み込むステッカー
 - `FaceStylizer` を使った画像専用のスタイル変換
 - 複数顔対応
 - Web Worker 化による UI ブロック軽減
@@ -101,5 +126,7 @@ UI で ON/OFF やスライダーを追加したい場合は、HTML の input に
 
 - Face Landmarker Web ガイド:
   [Google AI Edge](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/web_js?hl=ja)
+- Image Segmenter Web ガイド:
+  [Google AI Edge](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter/web_js?hl=ja)
 - tasks-vision JS API:
   [Google AI Edge API](https://ai.google.dev/edge/api/mediapipe/js/tasks-vision)

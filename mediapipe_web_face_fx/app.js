@@ -163,7 +163,7 @@ const effectPanelElements = [...document.querySelectorAll("[data-effect-panel]")
 const effectChoiceElements = [...document.querySelectorAll("[data-effect-choice]")];
 
 const canvasContext = elements.outputCanvas.getContext("2d");
-const blendshapeChartContext = elements.blendshapeChart.getContext("2d");
+const blendshapeChartContext = elements.blendshapeChart?.getContext("2d") || null;
 const frameBufferCanvas = document.createElement("canvas");
 const frameBufferContext = frameBufferCanvas.getContext("2d");
 const personLayerCanvas = document.createElement("canvas");
@@ -177,15 +177,21 @@ const stageFrameElement = elements.outputCanvas.closest(".stage-frame");
 // ---------------------------------------------------------------------------
 
 function setStatus(message) {
-  elements.statusLabel.textContent = message;
+  if (elements.statusLabel) {
+    elements.statusLabel.textContent = message;
+  }
 }
 
 function setSourceModeLabel(label) {
-  elements.sourceModeLabel.textContent = label;
+  if (elements.sourceModeLabel) {
+    elements.sourceModeLabel.textContent = label;
+  }
 }
 
 function setTrackingEffectLabel(label) {
-  elements.trackingEffectLabel.textContent = label;
+  if (elements.trackingEffectLabel) {
+    elements.trackingEffectLabel.textContent = label;
+  }
 }
 
 function setAppScreen(screen) {
@@ -309,12 +315,22 @@ function playCaptureFeedback() {
 }
 
 function resetTrackingUi() {
-  elements.faceCountLabel.textContent = "0";
-  elements.handCountLabel.textContent = "0";
-  elements.poseCountLabel.textContent = "0";
-  elements.segmentationLabel.textContent = "off";
+  if (elements.faceCountLabel) {
+    elements.faceCountLabel.textContent = "0";
+  }
+  if (elements.handCountLabel) {
+    elements.handCountLabel.textContent = "0";
+  }
+  if (elements.poseCountLabel) {
+    elements.poseCountLabel.textContent = "0";
+  }
+  if (elements.segmentationLabel) {
+    elements.segmentationLabel.textContent = "off";
+  }
   drawBlendshapeChart([]);
-  elements.blendshapeList.innerHTML = "<li>入力待ち</li>";
+  if (elements.blendshapeList) {
+    elements.blendshapeList.innerHTML = "<li>入力待ち</li>";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +354,10 @@ function topBlendshapeItems(faceResult, limit = 5) {
 }
 
 function drawBlendshapeChart(items) {
+  if (!elements.blendshapeChart || !blendshapeChartContext) {
+    return;
+  }
+
   const { width, height } = elements.blendshapeChart;
   const centerX = width / 2;
   const centerY = height / 2;
@@ -395,6 +415,10 @@ function drawBlendshapeChart(items) {
 
 function renderBlendshapeList(items) {
   drawBlendshapeChart(items);
+
+  if (!elements.blendshapeList) {
+    return;
+  }
 
   if (!items.length) {
     elements.blendshapeList.innerHTML = "<li>顔未検出、または blendshape 無効</li>";
@@ -505,14 +529,14 @@ function computeSquareRoi(faceBounds, params) {
   const intensityBoost = lerp(0.96, 1.08, clamp(params.intensity / 1.3, 0, 1));
   const squareSize =
     Math.max(faceBounds.faceW, faceBounds.faceH) * (params.squareScale || 1.8) * intensityBoost;
-  const squareX = faceBounds.centerX - squareSize / 2;
+  const squareX = faceBounds.centerX + faceBounds.faceW * (params.headXOffset || 0) - squareSize / 2;
   const squareY = faceBounds.faceMinY - faceBounds.faceH * (params.topOffset || 0.35);
 
   return {
     squareSize,
     squareX,
     squareY,
-    centerX: faceBounds.centerX,
+    centerX: faceBounds.centerX + faceBounds.faceW * (params.headXOffset || 0),
     centerY: squareY + squareSize / 2,
   };
 }
@@ -791,10 +815,18 @@ function buildDetectionSnapshot(source, faceResult, segmentationResult, params, 
 }
 
 function updateTrackingSummary(detectionSnapshot) {
-  elements.faceCountLabel.textContent = String(detectionSnapshot.face.count);
-  elements.handCountLabel.textContent = String(detectionSnapshot.hand.count);
-  elements.poseCountLabel.textContent = String(detectionSnapshot.pose.count);
-  elements.segmentationLabel.textContent = detectionSnapshot.segmentation.enabled ? "on" : "off";
+  if (elements.faceCountLabel) {
+    elements.faceCountLabel.textContent = String(detectionSnapshot.face.count);
+  }
+  if (elements.handCountLabel) {
+    elements.handCountLabel.textContent = String(detectionSnapshot.hand.count);
+  }
+  if (elements.poseCountLabel) {
+    elements.poseCountLabel.textContent = String(detectionSnapshot.pose.count);
+  }
+  if (elements.segmentationLabel) {
+    elements.segmentationLabel.textContent = detectionSnapshot.segmentation.enabled ? "on" : "off";
+  }
   renderBlendshapeList(detectionSnapshot.face.blendshapeItems);
 }
 
@@ -968,6 +1000,7 @@ function createEffect({ id, requiredDetections, run }) {
 function faceStickerEffect(effectContext) {
   const stickerImage = effectContext.assets.faceSticker;
   const stickerScale = effectContext.params.stickerScale || 1.25;
+  const stickerXOffset = effectContext.params.stickerXOffset || 0;
   const stickerYOffset = effectContext.params.stickerYOffset || -0.04;
   const stickerOpacity = effectContext.params.stickerOpacity || 0.92;
 
@@ -978,7 +1011,7 @@ function faceStickerEffect(effectContext) {
     );
     const drawWidth = Math.max(bounds.faceW * stickerScale, eyeDistance * 2.6);
     const drawHeight = drawWidth * (stickerImage.height / stickerImage.width);
-    const centerX = (anchors.leftEyeCenter.x + anchors.rightEyeCenter.x) / 2;
+    const centerX = (anchors.leftEyeCenter.x + anchors.rightEyeCenter.x) / 2 + bounds.faceW * stickerXOffset;
     const centerY = (anchors.leftEyeCenter.y + anchors.rightEyeCenter.y) / 2 + bounds.faceH * stickerYOffset;
 
     effectContext.ctx.save();
@@ -1145,14 +1178,21 @@ function createPersonLayerWithoutHead(sourceData, frameWidth, frameHeight, segme
 function drawWarpedHeadRows(sourceData, personData, frameWidth, frameHeight, headMask, params, targetHalfWidthForRow) {
   // 頭部マスクの各行を、代表中心から見た相対位置で再サンプリングする。
   // 四角・三角の違いは targetHalfWidthForRow だけに閉じ込める。
+  // headXOffset は元の頭部を読む位置ではなく、変形後の頭部を置く位置だけを左右に動かす。
+  const targetCenterX = clamp(
+    headMask.center.x + headMask.width * (params.headXOffset || 0),
+    0,
+    frameWidth - 1
+  );
+
   for (let y = headMask.bounds.minY; y <= headMask.bounds.maxY; y += 1) {
     if (!rowHasMask(headMask.rowBounds, y)) {
       continue;
     }
 
     const targetHalfWidth = targetHalfWidthForRow(headMask, headMask.rowBounds, y, params);
-    const targetMinX = clamp(Math.floor(headMask.center.x - targetHalfWidth), 0, frameWidth - 1);
-    const targetMaxX = clamp(Math.ceil(headMask.center.x + targetHalfWidth), 0, frameWidth - 1);
+    const targetMinX = clamp(Math.floor(targetCenterX - targetHalfWidth), 0, frameWidth - 1);
+    const targetMaxX = clamp(Math.ceil(targetCenterX + targetHalfWidth), 0, frameWidth - 1);
     const sourceHalfWidth = Math.max(
       headMask.center.x - headMask.rowBounds.minX[y],
       headMask.rowBounds.maxX[y] - headMask.center.x,
@@ -1160,7 +1200,7 @@ function drawWarpedHeadRows(sourceData, personData, frameWidth, frameHeight, hea
     );
 
     for (let x = targetMinX; x <= targetMaxX; x += 1) {
-      const normalizedX = (x - headMask.center.x) / Math.max(1, targetHalfWidth);
+      const normalizedX = (x - targetCenterX) / Math.max(1, targetHalfWidth);
       const sampleX = headMask.center.x + normalizedX * sourceHalfWidth;
       const targetIndex = (y * frameWidth + x) * 4;
       copyNearestPixel(sourceData, personData, frameWidth, frameHeight, sampleX, y, targetIndex);
@@ -1203,6 +1243,7 @@ function squareHeadEffect(effectContext) {
   const frameHeight = effectContext.frameBufferCanvas.height;
   const sourceImage = frameBufferContext.getImageData(0, 0, frameWidth, frameHeight);
   const sourceData = sourceImage.data;
+  const backgroundFill = backgroundColorAroundHead(sourceData, frameWidth, frameHeight, segmentation);
   const { personImage, personData, headMask } = createPersonLayerWithoutHead(
     sourceData,
     frameWidth,
@@ -1211,6 +1252,7 @@ function squareHeadEffect(effectContext) {
   );
 
   // 頭部は、頭部マスク全体の代表中心を軸にして横方向だけを四角く引き伸ばす。
+  coverOriginalHeadArea(effectContext.ctx, segmentation, frameWidth, frameHeight, backgroundFill);
   drawWarpedHeadRows(sourceData, personData, frameWidth, frameHeight, headMask, params, targetHeadHalfWidth);
 
   personLayerContext.clearRect(0, 0, frameWidth, frameHeight);
@@ -1952,11 +1994,15 @@ async function bootstrap() {
   await hydrateTemporaryGallery();
   syncGalleryActionButtons();
   setStatus(state.detectors.segmentation ? "初期化完了" : "Segmentationなしで初期化完了");
-  elements.blendshapeList.innerHTML = "<li>入力待ち</li>";
+  if (elements.blendshapeList) {
+    elements.blendshapeList.innerHTML = "<li>入力待ち</li>";
+  }
 }
 
 bootstrap().catch((error) => {
   setStatus("初期化失敗");
-  elements.blendshapeList.innerHTML = "<li>初期化エラー</li>";
+  if (elements.blendshapeList) {
+    elements.blendshapeList.innerHTML = "<li>初期化エラー</li>";
+  }
   console.error(error);
 });

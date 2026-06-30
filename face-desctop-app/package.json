@@ -1,0 +1,45 @@
+{
+  "name": "face-fx-studio",
+  "productName": "Face FX Studio",
+  "version": "1.0.0",
+  "description": "MediaPipeを用いた顔加工アプリ",
+  "author": "yagir",
+  "main": "main.js",
+  "scripts": {
+    "sync:mediapipe": "node scripts/sync-mediapipe-assets.mjs",
+    "prestart": "npm run sync:mediapipe",
+    "start": "electron-forge start",
+    "prepackage": "npm run sync:mediapipe",
+    "package": "electron-forge package",
+    "premake": "npm run sync:mediapipe",
+    "make": "electron-forge make"
+  },
+  "config": {
+    "forge": {
+      "packagerConfig": {
+        "asar": false,
+        "extraResource": [
+          "renderer/vendor/tasks-vision",
+          "renderer/models"
+        ]
+      },
+      "makers": [
+        {
+          "name": "@electron-forge/maker-squirrel",
+          "config": {
+            "name": "face_fx_studio"
+          }
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "electron": "^42.4.1"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "0.10.35",
+    "electron-squirrel-startup": "^1.0.1"
+  }
+}

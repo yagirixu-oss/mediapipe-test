@@ -125,3 +125,14 @@ Effect＝｛eat_cake, flash_head, ………｝的な感じ
 
 
 
+
+
+
+
+
+
+複数effect対応と複数人対応。
+
+
+
+

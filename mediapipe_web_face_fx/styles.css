@@ -65,9 +65,10 @@ body {
 }
 
 .workspace {
-  /* 左エリアと右エリアの2分割レイアウト。 */
+  /* 上段は Source とプレビュー、下段は Effect Pipeline を全幅で使う。 */
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 216px;
   gap: 16px;
   height: 100%;
   min-height: 0;
@@ -93,8 +94,7 @@ body {
 
 .visual-workspace {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 164px;
-  gap: 14px;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -634,12 +634,12 @@ button:disabled {
 }
 
 .effect-dock {
+  grid-column: 1 / -1;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 4px;
 }
 
 .effect-dock-head {
@@ -710,15 +710,12 @@ button:disabled {
   padding-right: 4px;
 }
 
-.effect-debug-toggle {
-  margin-top: 0;
-}
-
 @media (max-width: 1120px) {
   /* タブレット付近では2カラムを1カラムへ畳む。 */
   .workspace,
   .gallery-screen {
     grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
   }
 
   body {
