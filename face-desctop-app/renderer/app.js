@@ -1080,20 +1080,24 @@ function targetHeadHalfWidth(headMask, rowBounds, rowIndex, params) {
 
 function targetTriangleHeadHalfWidth(headMask, rowBounds, rowIndex, params) {
   // 三角頭部用の目標幅。
-  // 頭部マスク上端を広く、下端を細くすることで、顎方向へ尖った形に寄せる。
+  // 元の頭部より小さい幅にはしない。
+  // 先に元の頭部を背景色で消しているため、加工後の三角形が元マスクより細いと
+  // 背景色が灰色の穴のように見えてしまう。
   const centerX = headMask.center.x;
   const originalHalfWidth = Math.max(centerX - rowBounds.minX[rowIndex], rowBounds.maxX[rowIndex] - centerX, 1);
   const intensity = clamp((params.intensity || 0.8) / 1.3, 0, 1);
+  const squareScale = clamp((params.squareScale || 1.8) * 0.66, 0.7, 1.6);
   const stretchX = clamp((params.stretchX || 1.25) / 1.25, 0.65, 1.6);
   const verticalT = clamp(
     (rowIndex - headMask.bounds.minY) / Math.max(1, headMask.bounds.maxY - headMask.bounds.minY),
     0,
     1
   );
-  const topHalfWidth = Math.max(headMask.height * 0.52 * stretchX, headMask.representativeHalfWidth);
-  const bottomHalfWidth = Math.max(headMask.representativeHalfWidth * 0.16, headMask.height * 0.08);
+  const baseHalfWidth = Math.max(headMask.height * 0.5 * squareScale * stretchX, headMask.representativeHalfWidth);
+  const topHalfWidth = baseHalfWidth * 1.25;
+  const bottomHalfWidth = Math.max(baseHalfWidth * 0.72, headMask.representativeHalfWidth * 1.08);
   const triangleHalfWidth = lerp(topHalfWidth, bottomHalfWidth, verticalT);
-  return Math.max(1, lerp(originalHalfWidth, triangleHalfWidth, intensity));
+  return Math.max(originalHalfWidth, lerp(originalHalfWidth, triangleHalfWidth, intensity));
 }
 
 function backgroundColorAroundHead(sourceData, frameWidth, frameHeight, segmentation) {
