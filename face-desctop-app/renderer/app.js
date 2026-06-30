@@ -1766,6 +1766,14 @@ function stopCameraStream() {
 
 async function startCamera() {
   if (!state.detectors.face) {
+    setStatus("FaceLandmarker未初期化。Electron または Go Live で開いてください");
+    console.warn("FaceLandmarker is not ready. Check MediaPipe model / WASM loading.");
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus("この開き方ではカメラを使えません。Electron または Go Live で開いてください");
+    console.warn("navigator.mediaDevices.getUserMedia is unavailable. Avoid opening index.html as file://.");
     return;
   }
 
