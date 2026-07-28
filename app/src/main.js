@@ -3,7 +3,7 @@ import { createCaptureFeedback } from "./capture/captureFeedback.js";
 import { collectDomRefs, collectEffectControls, setListMessage } from "./ui/dom.js";
 import { ensureEffectAssets } from "./effects/effectAssets.js";
 import { renderEffectCatalog } from "./effects/effectCatalogView.js";
-import { getEffectById, resetAllEffectRuntime } from "./effects/effectRegistry.js";
+import { getEffectById } from "./effects/effectRegistry.js";
 import { EFFECT_METADATA } from "./effects/effectMetadata.js";
 import { createTemporaryGalleryController } from "./gallery/galleryController.js";
 import { createCameraInputController } from "./input/cameraInput.js";
@@ -52,7 +52,6 @@ const blendshapeView = createBlendshapeView({
   listElement: elements.blendshapeList,
   colors: BLENDSHAPE_COLORS,
 });
-let imageEffectAnimationFrameId = 0;
 
 // ---------------------------------------------------------------------------
 // 基本 UI ヘルパー
@@ -102,37 +101,6 @@ function currentParams() {
     params[control.dataset.effectParam] = readEffectControlValue(control);
     return params;
   }, {});
-}
-
-// ---------------------------------------------------------------------------
-// 静止画像モード専用の再描画ループ
-// カメラは毎フレーム描き直されるが、画像アップロードは通常 1 回しか描かれない。
-// 動画ビームのような時間変化エフェクトだけ、この補助ループで再描画を継続する。
-// ---------------------------------------------------------------------------
-
-function cancelScheduledImageEffectFrame() {
-  if (!imageEffectAnimationFrameId) {
-    return;
-  }
-
-  cancelAnimationFrame(imageEffectAnimationFrameId);
-  imageEffectAnimationFrameId = 0;
-}
-
-function scheduleImageEffectFrame(source, detectionSnapshot) {
-  if (imageEffectAnimationFrameId || state.sourceMode !== "image") {
-    return;
-  }
-
-  imageEffectAnimationFrameId = requestAnimationFrame(() => {
-    imageEffectAnimationFrameId = 0;
-
-    if (state.sourceMode !== "image" || !state.currentImage || state.currentImage !== source) {
-      return;
-    }
-
-    renderProcessedFrame(source, detectionSnapshot);
-  });
 }
 
 
@@ -206,7 +174,7 @@ function buildEffectContext(source, detections, params) {
 
 function runActiveEffect(effectContext) {
   const effect = activeEffect();
-  const effectResult = effect.run(effectContext);
+  effect.run(effectContext);
 
   if (effect.requiredDetections.includes("segmentation") && effectContext.params.debugRoiEnabled) {
     if (effectContext.detections.segmentation.headMask.valid) {
@@ -217,29 +185,16 @@ function runActiveEffect(effectContext) {
       });
     }
   }
-
-  if (typeof effectResult === "boolean") {
-    return effectResult;
-  }
-
-  return Boolean(effectResult?.requestContinue);
 }
 
 function renderProcessedFrame(source, detectionSnapshot) {
   const isCamera = state.sourceMode === "camera";
-  if (isCamera) {
-    cancelScheduledImageEffectFrame();
-  }
 
   stageRenderer.resize(detectionSnapshot.sourceWidth, detectionSnapshot.sourceHeight);
   stageRenderer.drawBaseSource(source, isCamera);
   updateTrackingSummary(detectionSnapshot);
 
   if (!detectionSnapshot.face.count) {
-    if (!isCamera) {
-      cancelScheduledImageEffectFrame();
-    }
-    resetAllEffectRuntime();
     stageRenderer.drawNoFaceOverlay();
     stateActions.setLastDetectionSnapshot(detectionSnapshot);
     return;
@@ -247,15 +202,7 @@ function renderProcessedFrame(source, detectionSnapshot) {
 
   const params = currentParams();
   const effectContext = buildEffectContext(source, detectionSnapshot, params);
-  const requestContinue = runActiveEffect(effectContext);
-
-  if (!isCamera) {
-    if (requestContinue) {
-      scheduleImageEffectFrame(source, detectionSnapshot);
-    } else {
-      cancelScheduledImageEffectFrame();
-    }
-  }
+  runActiveEffect(effectContext);
 
   stageRenderer.drawLandmarkBadge(detectionSnapshot.face.trackedFaces[0].bounds, `${activeEffect().shortLabel} tracked`);
   stateActions.setLastDetectionSnapshot(detectionSnapshot);
@@ -347,7 +294,6 @@ async function renderUploadedImage() {
     return;
   }
 
-  cancelScheduledImageEffectFrame();
   await setRunningMode("IMAGE");
   const params = currentParams();
   const faceResult = state.detectors.face.detect(state.currentImage);
@@ -368,8 +314,6 @@ const imageUploadInput = createImageUploadController({
 });
 
 function cleanupRuntimeResources() {
-  cancelScheduledImageEffectFrame();
-  resetAllEffectRuntime();
   cameraInput.stopCameraStream();
   captureFeedback.clear();
   imageUploadInput.releaseCurrentImage();
@@ -388,16 +332,12 @@ async function rerenderCurrentSourceIfNeeded() {
 }
 
 async function setActiveEffect(effectId) {
-  cancelScheduledImageEffectFrame();
-  resetAllEffectRuntime();
   stateActions.setActiveEffectId(effectId);
   updateActiveEffectUi();
   await rerenderCurrentSourceIfNeeded();
 }
 
 function stopCameraAndReset() {
-  cancelScheduledImageEffectFrame();
-  resetAllEffectRuntime();
   cameraInput.stopCameraStream();
   stateActions.setSourceMode("idle");
   stateActions.setLastDetectionSnapshot(null);
@@ -469,3 +409,9 @@ bootstrap().catch((error) => {
   setListMessage(elements.blendshapeList, "初期化エラー");
   console.error(error);
 });
+
+
+
+
+
+

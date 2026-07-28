@@ -1,45 +1,9 @@
-function imageFromUrl(imageUrl) {
+function imageFromDataUrl(dataUrl) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
     image.onerror = reject;
-    image.src = imageUrl;
-  });
-}
-
-// ---------------------------------------------------------------------------
-// 動画アセット読み込み
-// 口ビームは透過 WebM を HTMLVideoElement として保持し、
-// canvas の drawImage(video, ...) で毎フレーム貼り込む。
-// ---------------------------------------------------------------------------
-
-function videoFromAssetUrl(assetUrl) {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement("video");
-    video.muted = true;
-    video.defaultMuted = true;
-    video.loop = false;
-    video.playsInline = true;
-    video.preload = "auto";
-
-    video.addEventListener(
-      "loadeddata",
-      () => {
-        video.pause();
-        resolve(video);
-      },
-      { once: true },
-    );
-
-    video.addEventListener(
-      "error",
-      () => {
-        reject(new Error(`Failed to load video asset: ${assetUrl}`));
-      },
-      { once: true },
-    );
-
-    video.src = assetUrl;
+    image.src = dataUrl;
   });
 }
 
@@ -122,39 +86,11 @@ async function createFaceStickerAsset() {
   drawSparkle(456, 56, 1, "rgba(14, 165, 233, 0.92)");
   drawSparkle(420, 188, 0.9, "rgba(255, 255, 255, 0.86)");
 
-  return imageFromUrl(stickerCanvas.toDataURL("image/png"));
-}
-
-// ---------------------------------------------------------------------------
-// 各エフェクト用アセット生成
-// ここが「画像素材」「動画素材」をまとめて初期化する入口。
-// 新しい外部素材エフェクトを足すときは、まずこの層へ置く。
-// ---------------------------------------------------------------------------
-
-async function createMouthBeamVideoAsset() {
-  return videoFromAssetUrl(new URL("../../assets/beam_alpha.webm", import.meta.url).href);
-}
-
-// ---------------------------------------------------------------------------
-// ケーキ画像アセット
-// 外部で用意した透過 PNG を一度だけ読み込み、各フレームでは同じ Image を再利用する。
-// 毎フレーム画像を読み直すと移動アニメーションが止まるため、初期化時のキャッシュが重要。
-// ---------------------------------------------------------------------------
-
-async function createCakeImageAsset() {
-  return imageFromUrl(new URL("../../assets/cake.png", import.meta.url).href);
+  return imageFromDataUrl(stickerCanvas.toDataURL("image/png"));
 }
 
 export async function ensureEffectAssets(assets) {
   if (!assets.faceSticker) {
     assets.faceSticker = await createFaceStickerAsset();
-  }
-
-  if (!assets.mouthBeamVideo) {
-    assets.mouthBeamVideo = await createMouthBeamVideoAsset();
-  }
-
-  if (!assets.cakeImage) {
-    assets.cakeImage = await createCakeImageAsset();
   }
 }

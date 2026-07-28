@@ -1,12 +1,37 @@
 import { EFFECT_METADATA } from "./effectMetadata.js";
+import { SEGMENTATION_CATEGORY } from "../mediapipe/detectionConstants.js";
 import { isHeadCategory, isPersonCategory, rowHasMask } from "../mediapipe/detectionSnapshot.js";
 import { clamp, lerp } from "../core/math.js";
+import {
+  crownEffect,
+  laserEyesEffect,
+  mustacheEffect,
+  partyHatEffect,
+  roundGlassesEffect,
+} from "./accessoryEffects.js";
 
-// ---------------------------------------------------------------------------
-// エフェクト共通メタデータ組み立て
-// 各エフェクトは id / 必要検出 / 実行関数だけを定義し、
-// 表示名や説明は effectMetadata.js から合流させる。
-// ---------------------------------------------------------------------------
+const FACE_OVAL_LANDMARKS = [
+  10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148,
+  176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+];
+const LEFT_EYE_LANDMARKS = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+const RIGHT_EYE_LANDMARKS = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398];
+const LEFT_BROW_LANDMARKS = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46];
+const RIGHT_BROW_LANDMARKS = [336, 296, 334, 293, 300, 276, 283, 282, 295, 285];
+const OUTER_LIP_LANDMARKS = [
+  61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185,
+];
+const INNER_LIP_LANDMARKS = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191];
+const NOSTRIL_LANDMARKS = [98, 327];
+const SKIN_MASK_SCRATCH = {
+  maskCanvas: null,
+  maskContext: null,
+  limitCanvas: null,
+  limitContext: null,
+  blurCanvas: null,
+  blurContext: null,
+};
+const SPATIAL_WEIGHT_CACHE = new Map();
 
 function createEffect({ id, requiredDetections, run }) {
   return {
@@ -16,12 +41,6 @@ function createEffect({ id, requiredDetections, run }) {
     run,
   };
 }
-
-// ---------------------------------------------------------------------------
-// 顔に画像や図形を重ねる基本エフェクト群
-// 顔ランドマークから基準点を作り、そこへ視覚素材を貼り込む。
-// 新しい顔パーツ系エフェクトはまずこの並びに増える。
-// ---------------------------------------------------------------------------
 
 function faceStickerEffect(effectContext) {
   const stickerImage = effectContext.assets.faceSticker;
@@ -50,509 +69,6 @@ function faceStickerEffect(effectContext) {
     );
     effectContext.ctx.restore();
   });
-}
-
-// ---------------------------------------------------------------------------
-// 口ビーム用の判定・再生状態
-// 「横向き + 口開き」を 1 秒維持できたかをここで管理し、
-// 発射中の向きや再生中フラグもエフェクト内部で完結させる。
-// ---------------------------------------------------------------------------
-
-const BEAM_DELAY_MS = 1000;
-const BEAM_MOUTH_OPEN_THRESHOLD = 0.038;
-const BEAM_SIDEWAYS_THRESHOLD = 0.14;
-const BEAM_DRAW_HEIGHT_RATIO = 0.68;
-const BEAM_DRAW_VERTICAL_OFFSET = 0.04;
-
-const mouthBeamRuntime = {
-  activeVideo: null,
-  openStartedAt: 0,
-  hasTriggeredCurrentOpen: false,
-  isPlaying: false,
-  playbackDirection: 1,
-  lastVisibleDirection: 1,
-};
-
-function resetMouthBeamRuntime() {
-  if (mouthBeamRuntime.activeVideo) {
-    mouthBeamRuntime.activeVideo.pause();
-    mouthBeamRuntime.activeVideo.currentTime = 0;
-  }
-
-  mouthBeamRuntime.activeVideo = null;
-  mouthBeamRuntime.openStartedAt = 0;
-  mouthBeamRuntime.hasTriggeredCurrentOpen = false;
-  mouthBeamRuntime.isPlaying = false;
-  mouthBeamRuntime.playbackDirection = 1;
-  mouthBeamRuntime.lastVisibleDirection = 1;
-}
-
-export function resetAllEffectRuntime() {
-  resetMouthBeamRuntime();
-  resetEatCakeRuntime();
-}
-
-function normalizedMouthOpenAmount({ anchors, bounds }) {
-  const mouthGap = Math.hypot(
-    anchors.mouthLower.x - anchors.mouthUpper.x,
-    anchors.mouthLower.y - anchors.mouthUpper.y,
-  );
-  return mouthGap / Math.max(bounds.faceH, 1);
-}
-
-function horizontalTurnScore({ anchors }) {
-  const eyeMidX = (anchors.leftEyeCenter.x + anchors.rightEyeCenter.x) / 2;
-  const eyeDistance = Math.hypot(
-    anchors.rightEyeCenter.x - anchors.leftEyeCenter.x,
-    anchors.rightEyeCenter.y - anchors.leftEyeCenter.y,
-  );
-
-  if (eyeDistance < 1) {
-    return 0;
-  }
-
-  return (anchors.noseTip.x - eyeMidX) / eyeDistance;
-}
-
-function playbackFinished(video) {
-  if (!video) {
-    return true;
-  }
-
-  if (video.ended) {
-    return true;
-  }
-
-  if (Number.isFinite(video.duration) && video.duration > 0) {
-    return video.currentTime >= Math.max(0, video.duration - 1 / 60);
-  }
-
-  return false;
-}
-
-function startMouthBeamPlayback(video, direction) {
-  mouthBeamRuntime.activeVideo = video;
-  mouthBeamRuntime.openStartedAt = 0;
-  mouthBeamRuntime.hasTriggeredCurrentOpen = true;
-  mouthBeamRuntime.isPlaying = true;
-  mouthBeamRuntime.playbackDirection = direction;
-  mouthBeamRuntime.lastVisibleDirection = direction;
-
-  video.pause();
-  video.currentTime = 0;
-
-  const playPromise = video.play();
-  if (typeof playPromise?.catch === "function") {
-    playPromise.catch(() => {
-      mouthBeamRuntime.isPlaying = false;
-      video.pause();
-      video.currentTime = 0;
-    });
-  }
-}
-
-function stopMouthBeamPlayback(video, { resetChargeState = false } = {}) {
-  mouthBeamRuntime.isPlaying = false;
-
-  if (resetChargeState) {
-    mouthBeamRuntime.openStartedAt = 0;
-    mouthBeamRuntime.hasTriggeredCurrentOpen = false;
-  }
-
-  if (!video) {
-    return;
-  }
-
-  video.pause();
-  video.currentTime = 0;
-}
-
-function syncMouthBeamPlayback(trackedFace, beamVideo, nowMs) {
-  const mouthOpenAmount = normalizedMouthOpenAmount(trackedFace);
-  const turnScore = horizontalTurnScore(trackedFace);
-  const isSideways = Math.abs(turnScore) >= BEAM_SIDEWAYS_THRESHOLD;
-  const isMouthOpen = mouthOpenAmount >= BEAM_MOUTH_OPEN_THRESHOLD;
-  const isChargingPose = isSideways && isMouthOpen;
-  const visibleDirection = turnScore < 0 ? -1 : 1;
-
-  mouthBeamRuntime.activeVideo = beamVideo;
-  mouthBeamRuntime.lastVisibleDirection = visibleDirection;
-
-  if (mouthBeamRuntime.isPlaying) {
-    if (!isMouthOpen) {
-      stopMouthBeamPlayback(beamVideo, { resetChargeState: true });
-      return {
-        direction: visibleDirection,
-        requestContinue: false,
-      };
-    }
-
-    if (playbackFinished(beamVideo)) {
-      stopMouthBeamPlayback(beamVideo);
-    }
-
-    return {
-      direction: mouthBeamRuntime.playbackDirection,
-      requestContinue: mouthBeamRuntime.isPlaying,
-    };
-  }
-
-  if (!isChargingPose) {
-    mouthBeamRuntime.openStartedAt = 0;
-    mouthBeamRuntime.hasTriggeredCurrentOpen = false;
-    return {
-      direction: visibleDirection,
-      requestContinue: false,
-    };
-  }
-
-  if (!mouthBeamRuntime.openStartedAt) {
-    mouthBeamRuntime.openStartedAt = nowMs;
-  }
-
-  if (!mouthBeamRuntime.hasTriggeredCurrentOpen && nowMs - mouthBeamRuntime.openStartedAt >= BEAM_DELAY_MS) {
-    startMouthBeamPlayback(beamVideo, visibleDirection);
-  }
-
-  return {
-    direction: mouthBeamRuntime.isPlaying ? mouthBeamRuntime.playbackDirection : visibleDirection,
-    requestContinue: !mouthBeamRuntime.hasTriggeredCurrentOpen || mouthBeamRuntime.isPlaying,
-  };
-}
-
-function drawMouthBeamVideo(effectContext, trackedFace, beamVideo, direction) {
-  const { mouthCenter } = trackedFace.anchors;
-  const beamHeight = Math.max(trackedFace.bounds.faceH * BEAM_DRAW_HEIGHT_RATIO, 28);
-  const distanceToEdge =
-    direction > 0
-      ? Math.max(1, effectContext.frameBufferCanvas.width - mouthCenter.x)
-      : Math.max(1, mouthCenter.x);
-  const drawY = mouthCenter.y - beamHeight / 2 - trackedFace.bounds.faceH * BEAM_DRAW_VERTICAL_OFFSET;
-
-  effectContext.ctx.save();
-  effectContext.ctx.translate(mouthCenter.x, drawY);
-  if (direction < 0) {
-    effectContext.ctx.scale(-1, 1);
-  }
-  effectContext.ctx.drawImage(beamVideo, 0, 0, distanceToEdge, beamHeight);
-  effectContext.ctx.restore();
-}
-
-function mouthBeamEffect(effectContext) {
-  const beamVideo = effectContext.assets.mouthBeamVideo;
-  const trackedFace = effectContext.detections.face.trackedFaces[0];
-
-  if (!beamVideo || !trackedFace) {
-    resetMouthBeamRuntime();
-    return { requestContinue: false };
-  }
-
-  const playbackState = syncMouthBeamPlayback(trackedFace, beamVideo, performance.now());
-  if (mouthBeamRuntime.isPlaying) {
-    drawMouthBeamVideo(effectContext, trackedFace, beamVideo, playbackState.direction);
-  }
-
-  return {
-    requestContinue: playbackState.requestContinue,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// ケーキを食べるエフェクト: 定数と実行状態
-//
-// このエフェクトは一枚の画像を貼るだけではなく、時間によって動作が変わる。
-// phase が現在の動作を表し、各フレームで次の状態へ進むかを判定する。
-//
-// idle       : 口が開くのを待つ
-// approaching: 画面下から0.5秒で口元へ移動する
-// waiting    : 口元に追従し、口が閉じるまで待つ
-// returning  : 到達前に口が閉じたため、画面下へ戻って消える
-// eating     : ケーキを縮小しながら三角形の破片を飛ばす
-// ---------------------------------------------------------------------------
-
-const CAKE_PHASE = Object.freeze({
-  IDLE: "idle",
-  APPROACHING: "approaching",
-  WAITING: "waiting",
-  RETURNING: "returning",
-  EATING: "eating",
-});
-
-const CAKE_APPROACH_DURATION_MS = 500;
-const CAKE_RETURN_DURATION_MS = 500;
-const CAKE_SHRINK_DURATION_MS = 180;
-const CAKE_PARTICLE_DURATION_MS = 650;
-const CAKE_MOUTH_OPEN_THRESHOLD = 0.038;
-const CAKE_MOUTH_CLOSED_THRESHOLD = 0.024;
-const CAKE_WIDTH_FACE_RATIO = 1.2;
-const CAKE_TARGET_Y_FACE_OFFSET = 0.24;
-const CAKE_PARTICLE_COUNT = 26;
-const CAKE_PARTICLE_COLORS = ["#f44d3e", "#ff7b6e", "#f7b2ad", "#b18462", "#8d623d"];
-
-const eatCakeRuntime = {
-  phase: CAKE_PHASE.IDLE,
-  phaseStartedAt: 0,
-  armed: true,
-  position: { x: 0, y: 0 },
-  returnStartPosition: { x: 0, y: 0 },
-  eatPosition: { x: 0, y: 0 },
-  particles: [],
-};
-
-// ケーキ用の状態を初期値へ戻す。
-// エフェクト切り替え、カメラ停止、顔の検出消失時に前回の動作を残さないために使う。
-function resetEatCakeRuntime() {
-  eatCakeRuntime.phase = CAKE_PHASE.IDLE;
-  eatCakeRuntime.phaseStartedAt = 0;
-  eatCakeRuntime.armed = true;
-  eatCakeRuntime.position = { x: 0, y: 0 };
-  eatCakeRuntime.returnStartPosition = { x: 0, y: 0 };
-  eatCakeRuntime.eatPosition = { x: 0, y: 0 };
-  eatCakeRuntime.particles = [];
-}
-
-// 0～1の直線的な進行値を、最初と最後が滑らかな移動へ変換する。
-// ケーキが突然発進・停止して見えることを防ぐ。
-function easeInOutCubic(progress) {
-  const t = clamp(progress, 0, 1);
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-// 現在の顔サイズからケーキの表示寸法を決める。
-// 元画像の縦横比を維持するため、顔が近づいても画像が縦横に潰れない。
-function cakeDrawSize(cakeImage, trackedFace) {
-  const width = Math.max(72, trackedFace.bounds.faceW * CAKE_WIDTH_FACE_RATIO);
-  return {
-    width,
-    height: width * (cakeImage.height / Math.max(1, cakeImage.width)),
-  };
-}
-
-// ケーキが待機する口元の座標を返す。
-// 画像の中心を口そのものに置くと顔全体を隠すため、顔の高さに比例して少し下へずらす。
-function cakeMouthTarget(trackedFace) {
-  return {
-    x: trackedFace.anchors.mouthCenter.x,
-    y: trackedFace.anchors.mouthCenter.y + trackedFace.bounds.faceH * CAKE_TARGET_Y_FACE_OFFSET,
-  };
-}
-
-// 画面下の見えない位置を出発点・帰還先として使う。
-// X座標は口の位置に合わせ、真下から上がってくる動きにする。
-function cakeOffscreenPosition(effectContext, trackedFace, drawSize) {
-  return {
-    x: trackedFace.anchors.mouthCenter.x,
-    y: effectContext.frameBufferCanvas.height + drawSize.height / 2,
-  };
-}
-
-// ケーキ画像を中心座標基準で描画する。
-// alpha はフェード、scale は食べた瞬間の縮小に利用する。
-function drawCakeImage(effectContext, cakeImage, position, drawSize, alpha = 1, scale = 1) {
-  const width = drawSize.width * scale;
-  const height = drawSize.height * scale;
-
-  effectContext.ctx.save();
-  effectContext.ctx.globalAlpha = clamp(alpha, 0, 1);
-  effectContext.ctx.drawImage(
-    cakeImage,
-    position.x - width / 2,
-    position.y - height / 2,
-    width,
-    height,
-  );
-  effectContext.ctx.restore();
-}
-
-// 食べた瞬間に一度だけ三角形の情報を生成する。
-// 生成結果を保存しておくことで、フレームごとに飛ぶ方向が変化するのを防ぐ。
-function createCakeParticles(origin, faceWidth) {
-  const baseSpeed = Math.max(90, faceWidth * 1.25);
-
-  return Array.from({ length: CAKE_PARTICLE_COUNT }, (_, index) => {
-    const spread = (index / CAKE_PARTICLE_COUNT) * Math.PI * 2;
-    const angle = spread + (Math.random() - 0.5) * 0.38;
-    const speed = baseSpeed * (0.58 + Math.random() * 0.7);
-
-    return {
-      originX: origin.x,
-      originY: origin.y,
-      velocityX: Math.cos(angle) * speed,
-      velocityY: Math.sin(angle) * speed - baseSpeed * 0.28,
-      gravity: baseSpeed * (1.25 + Math.random() * 0.45),
-      size: Math.max(4, faceWidth * (0.025 + Math.random() * 0.028)),
-      rotation: Math.random() * Math.PI * 2,
-      rotationSpeed: (Math.random() - 0.5) * 10,
-      color: CAKE_PARTICLE_COLORS[index % CAKE_PARTICLE_COLORS.length],
-    };
-  });
-}
-
-// 保存した速度・重力から、現在時刻における三角形の位置を計算して描く。
-// Canvas上で直接作るため、破片用の画像ファイルは必要ない。
-function drawCakeParticles(effectContext, nowMs) {
-  const elapsedSeconds = Math.max(0, nowMs - eatCakeRuntime.phaseStartedAt) / 1000;
-  const progress = clamp(
-    (nowMs - eatCakeRuntime.phaseStartedAt) / CAKE_PARTICLE_DURATION_MS,
-    0,
-    1,
-  );
-
-  eatCakeRuntime.particles.forEach((particle) => {
-    const x = particle.originX + particle.velocityX * elapsedSeconds;
-    const y =
-      particle.originY +
-      particle.velocityY * elapsedSeconds +
-      0.5 * particle.gravity * elapsedSeconds * elapsedSeconds;
-    const size = particle.size * (1 - progress * 0.55);
-
-    effectContext.ctx.save();
-    effectContext.ctx.globalAlpha = 1 - progress;
-    effectContext.ctx.translate(x, y);
-    effectContext.ctx.rotate(particle.rotation + particle.rotationSpeed * elapsedSeconds);
-    effectContext.ctx.fillStyle = particle.color;
-    effectContext.ctx.beginPath();
-    effectContext.ctx.moveTo(0, -size);
-    effectContext.ctx.lineTo(size * 0.9, size * 0.75);
-    effectContext.ctx.lineTo(-size * 0.9, size * 0.75);
-    effectContext.ctx.closePath();
-    effectContext.ctx.fill();
-    effectContext.ctx.restore();
-  });
-}
-
-// 食べる状態へ切り替え、ケーキの最終位置と破片情報を固定する。
-function startEatingCake(nowMs, trackedFace) {
-  eatCakeRuntime.phase = CAKE_PHASE.EATING;
-  eatCakeRuntime.phaseStartedAt = nowMs;
-  eatCakeRuntime.eatPosition = { ...eatCakeRuntime.position };
-  eatCakeRuntime.particles = createCakeParticles(eatCakeRuntime.eatPosition, trackedFace.bounds.faceW);
-}
-
-// ケーキエフェクトの根幹となる状態更新と描画。
-// return の requestContinue が true の間、静止画像でも main.js が次フレームを再描画する。
-function eatCakeEffect(effectContext) {
-  const cakeImage = effectContext.assets.cakeImage;
-  const trackedFace = effectContext.detections.face.trackedFaces[0];
-
-  if (!cakeImage || !trackedFace) {
-    resetEatCakeRuntime();
-    return { requestContinue: false };
-  }
-
-  const nowMs = performance.now();
-  const mouthOpenAmount = normalizedMouthOpenAmount(trackedFace);
-  const isMouthOpen = mouthOpenAmount >= CAKE_MOUTH_OPEN_THRESHOLD;
-  const isMouthClosed = mouthOpenAmount <= CAKE_MOUTH_CLOSED_THRESHOLD;
-  const drawSize = cakeDrawSize(cakeImage, trackedFace);
-  const mouthTarget = cakeMouthTarget(trackedFace);
-  const offscreenTarget = cakeOffscreenPosition(effectContext, trackedFace, drawSize);
-
-  if (eatCakeRuntime.phase === CAKE_PHASE.IDLE) {
-    if (isMouthClosed) {
-      eatCakeRuntime.armed = true;
-    }
-
-    if (!eatCakeRuntime.armed || !isMouthOpen) {
-      return { requestContinue: false };
-    }
-
-    eatCakeRuntime.armed = false;
-    eatCakeRuntime.phase = CAKE_PHASE.APPROACHING;
-    eatCakeRuntime.phaseStartedAt = nowMs;
-    eatCakeRuntime.position = { ...offscreenTarget };
-  }
-
-  if (eatCakeRuntime.phase === CAKE_PHASE.APPROACHING) {
-    if (isMouthClosed) {
-      eatCakeRuntime.phase = CAKE_PHASE.RETURNING;
-      eatCakeRuntime.phaseStartedAt = nowMs;
-      eatCakeRuntime.returnStartPosition = { ...eatCakeRuntime.position };
-    } else {
-      const progress = clamp(
-        (nowMs - eatCakeRuntime.phaseStartedAt) / CAKE_APPROACH_DURATION_MS,
-        0,
-        1,
-      );
-      const easedProgress = easeInOutCubic(progress);
-      eatCakeRuntime.position = {
-        x: lerp(offscreenTarget.x, mouthTarget.x, easedProgress),
-        y: lerp(offscreenTarget.y, mouthTarget.y, easedProgress),
-      };
-      drawCakeImage(effectContext, cakeImage, eatCakeRuntime.position, drawSize, easedProgress);
-
-      if (progress >= 1) {
-        eatCakeRuntime.phase = CAKE_PHASE.WAITING;
-        eatCakeRuntime.phaseStartedAt = nowMs;
-      }
-
-      return { requestContinue: true };
-    }
-  }
-
-  if (eatCakeRuntime.phase === CAKE_PHASE.WAITING) {
-    eatCakeRuntime.position = { ...mouthTarget };
-
-    if (isMouthClosed) {
-      startEatingCake(nowMs, trackedFace);
-    } else {
-      drawCakeImage(effectContext, cakeImage, eatCakeRuntime.position, drawSize);
-      return { requestContinue: true };
-    }
-  }
-
-  if (eatCakeRuntime.phase === CAKE_PHASE.RETURNING) {
-    const progress = clamp(
-      (nowMs - eatCakeRuntime.phaseStartedAt) / CAKE_RETURN_DURATION_MS,
-      0,
-      1,
-    );
-    const easedProgress = easeInOutCubic(progress);
-    eatCakeRuntime.position = {
-      x: lerp(eatCakeRuntime.returnStartPosition.x, offscreenTarget.x, easedProgress),
-      y: lerp(eatCakeRuntime.returnStartPosition.y, offscreenTarget.y, easedProgress),
-    };
-    drawCakeImage(effectContext, cakeImage, eatCakeRuntime.position, drawSize, 1 - easedProgress);
-
-    if (progress >= 1) {
-      eatCakeRuntime.phase = CAKE_PHASE.IDLE;
-      eatCakeRuntime.phaseStartedAt = 0;
-      return { requestContinue: false };
-    }
-
-    return { requestContinue: true };
-  }
-
-  if (eatCakeRuntime.phase === CAKE_PHASE.EATING) {
-    const shrinkProgress = clamp(
-      (nowMs - eatCakeRuntime.phaseStartedAt) / CAKE_SHRINK_DURATION_MS,
-      0,
-      1,
-    );
-
-    if (shrinkProgress < 1) {
-      drawCakeImage(
-        effectContext,
-        cakeImage,
-        eatCakeRuntime.eatPosition,
-        drawSize,
-        1 - shrinkProgress,
-        1 - easeInOutCubic(shrinkProgress),
-      );
-    }
-    drawCakeParticles(effectContext, nowMs);
-
-    if (nowMs - eatCakeRuntime.phaseStartedAt >= CAKE_PARTICLE_DURATION_MS) {
-      eatCakeRuntime.phase = CAKE_PHASE.IDLE;
-      eatCakeRuntime.phaseStartedAt = 0;
-      eatCakeRuntime.particles = [];
-      return { requestContinue: false };
-    }
-
-    return { requestContinue: true };
-  }
-
-  return { requestContinue: false };
 }
 
 function clownNoseEffect(effectContext) {
@@ -603,6 +119,552 @@ function clownNoseEffect(effectContext) {
     effectContext.ctx.fill();
     effectContext.ctx.restore();
   });
+}
+
+function roundedRectPath(ctx, x, y, width, height, radius) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + safeRadius, y);
+  ctx.lineTo(x + width - safeRadius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  ctx.lineTo(x + width, y + height - safeRadius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  ctx.lineTo(x + safeRadius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  ctx.lineTo(x, y + safeRadius);
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
+  ctx.closePath();
+}
+
+function drawSunglassesLens(ctx, x, y, width, height, radius) {
+  roundedRectPath(ctx, x, y, width, height, radius);
+  ctx.fill();
+  ctx.stroke();
+}
+
+function sunglassesEffect(effectContext) {
+  const sunglassesScale = effectContext.params.sunglassesScale || 1;
+  const sunglassesOpacity = effectContext.params.sunglassesOpacity || 0.92;
+
+  effectContext.detections.face.trackedFaces.forEach(({ bounds, anchors }) => {
+    const leftEye = anchors.leftEyeCenter;
+    const rightEye = anchors.rightEyeCenter;
+    const eyeDistance = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y);
+    const lensWidth = clamp(eyeDistance * 0.58 * sunglassesScale, 18, bounds.faceW * 0.46);
+    const lensHeight = lensWidth * 0.58;
+    const lensRadius = lensHeight * 0.28;
+    const bridgeTopY = -lensHeight * 0.1;
+    const centerX = (leftEye.x + rightEye.x) / 2;
+    const centerY = (leftEye.y + rightEye.y) / 2 + bounds.faceH * 0.015;
+    const angle = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
+    const leftLensX = -eyeDistance / 2 - lensWidth / 2;
+    const rightLensX = eyeDistance / 2 - lensWidth / 2;
+    const lensY = -lensHeight / 2;
+    const lineWidth = Math.max(2, lensHeight * 0.08);
+
+    effectContext.ctx.save();
+    effectContext.ctx.translate(centerX, centerY);
+    effectContext.ctx.rotate(angle);
+    effectContext.ctx.globalAlpha = sunglassesOpacity;
+    effectContext.ctx.fillStyle = "rgba(4, 8, 18, 0.94)";
+    effectContext.ctx.strokeStyle = "rgba(255, 255, 255, 0.24)";
+    effectContext.ctx.lineWidth = lineWidth;
+    effectContext.ctx.shadowColor = "rgba(0, 0, 0, 0.34)";
+    effectContext.ctx.shadowBlur = lensHeight * 0.18;
+    effectContext.ctx.shadowOffsetY = lensHeight * 0.08;
+
+    drawSunglassesLens(effectContext.ctx, leftLensX, lensY, lensWidth, lensHeight, lensRadius);
+    drawSunglassesLens(effectContext.ctx, rightLensX, lensY, lensWidth, lensHeight, lensRadius);
+
+    effectContext.ctx.shadowColor = "transparent";
+    effectContext.ctx.strokeStyle = "rgba(4, 8, 18, 0.96)";
+    effectContext.ctx.lineWidth = Math.max(3, lensHeight * 0.12);
+    effectContext.ctx.beginPath();
+    effectContext.ctx.moveTo(leftLensX + lensWidth * 0.9, bridgeTopY);
+    effectContext.ctx.quadraticCurveTo(0, -lensHeight * 0.26, rightLensX + lensWidth * 0.1, bridgeTopY);
+    effectContext.ctx.stroke();
+
+    effectContext.ctx.globalAlpha = sunglassesOpacity * 0.28;
+    effectContext.ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    roundedRectPath(effectContext.ctx, leftLensX + lensWidth * 0.16, lensY + lensHeight * 0.18, lensWidth * 0.36, lensHeight * 0.1, lensHeight * 0.05);
+    effectContext.ctx.fill();
+    roundedRectPath(effectContext.ctx, rightLensX + lensWidth * 0.16, lensY + lensHeight * 0.18, lensWidth * 0.36, lensHeight * 0.1, lensHeight * 0.05);
+    effectContext.ctx.fill();
+    effectContext.ctx.restore();
+  });
+}
+
+function numericParam(params, key, fallback) {
+  const value = Number(params[key]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function readSkinFilterParams(params) {
+  return {
+    smoothStrength: clamp(numericParam(params, "skinSmoothStrength", 0.35), 0, 1),
+    brightness: clamp(numericParam(params, "skinBrightness", 0.04), 0, 0.2),
+    rednessReduction: clamp(numericParam(params, "skinRednessReduction", 0.04), 0, 0.2),
+    maskBlur: clamp(Math.round(numericParam(params, "skinMaskBlur", 21)), 0, 45),
+    detailPreservation: clamp(numericParam(params, "skinDetailPreservation", 0.15), 0, 0.45),
+  };
+}
+
+function ensureSkinMaskScratch(width, height) {
+  if (!SKIN_MASK_SCRATCH.maskCanvas) {
+    SKIN_MASK_SCRATCH.maskCanvas = document.createElement("canvas");
+    SKIN_MASK_SCRATCH.maskContext = SKIN_MASK_SCRATCH.maskCanvas.getContext("2d", { willReadFrequently: true });
+    SKIN_MASK_SCRATCH.limitCanvas = document.createElement("canvas");
+    SKIN_MASK_SCRATCH.limitContext = SKIN_MASK_SCRATCH.limitCanvas.getContext("2d");
+    SKIN_MASK_SCRATCH.blurCanvas = document.createElement("canvas");
+    SKIN_MASK_SCRATCH.blurContext = SKIN_MASK_SCRATCH.blurCanvas.getContext("2d", { willReadFrequently: true });
+  }
+
+  for (const canvas of [SKIN_MASK_SCRATCH.maskCanvas, SKIN_MASK_SCRATCH.limitCanvas, SKIN_MASK_SCRATCH.blurCanvas]) {
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+  }
+
+  return SKIN_MASK_SCRATCH;
+}
+
+function landmarkToPoint(landmarks, index, frameWidth, frameHeight, mirror, roi) {
+  const landmark = landmarks[index];
+  if (!landmark) {
+    return null;
+  }
+
+  const sourceX = landmark.x * frameWidth;
+  return {
+    x: (mirror ? frameWidth - sourceX : sourceX) - roi.x,
+    y: landmark.y * frameHeight - roi.y,
+  };
+}
+
+function landmarkPoints(landmarks, indices, frameWidth, frameHeight, mirror, roi) {
+  return indices
+    .map((index) => landmarkToPoint(landmarks, index, frameWidth, frameHeight, mirror, roi))
+    .filter(Boolean);
+}
+
+function polygonCenter(points) {
+  const sum = points.reduce(
+    (total, point) => ({
+      x: total.x + point.x,
+      y: total.y + point.y,
+    }),
+    { x: 0, y: 0 }
+  );
+
+  return {
+    x: sum.x / Math.max(1, points.length),
+    y: sum.y / Math.max(1, points.length),
+  };
+}
+
+function expandedPolygon(points, scale) {
+  const center = polygonCenter(points);
+  return points.map((point) => ({
+    x: center.x + (point.x - center.x) * scale,
+    y: center.y + (point.y - center.y) * scale,
+  }));
+}
+
+function fillPolygon(ctx, points) {
+  if (points.length < 3) {
+    return;
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let index = 1; index < points.length; index += 1) {
+    ctx.lineTo(points[index].x, points[index].y);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawExpandedLandmarkPolygon(ctx, face, indices, frameWidth, frameHeight, mirror, roi, scale) {
+  const points = landmarkPoints(face.landmarks, indices, frameWidth, frameHeight, mirror, roi);
+  fillPolygon(ctx, expandedPolygon(points, scale));
+}
+
+function drawFaceLimitMask(ctx, faces, frameWidth, frameHeight, mirror, roi) {
+  ctx.fillStyle = "rgba(255, 255, 255, 1)";
+  faces.forEach((face) => {
+    drawExpandedLandmarkPolygon(ctx, face, FACE_OVAL_LANDMARKS, frameWidth, frameHeight, mirror, roi, 0.965);
+  });
+}
+
+function drawFeatureExclusionMask(ctx, faces, frameWidth, frameHeight, mirror, roi) {
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.fillStyle = "rgba(0, 0, 0, 1)";
+
+  faces.forEach((face) => {
+    drawExpandedLandmarkPolygon(ctx, face, LEFT_EYE_LANDMARKS, frameWidth, frameHeight, mirror, roi, 1.85);
+    drawExpandedLandmarkPolygon(ctx, face, RIGHT_EYE_LANDMARKS, frameWidth, frameHeight, mirror, roi, 1.85);
+    drawExpandedLandmarkPolygon(ctx, face, LEFT_BROW_LANDMARKS, frameWidth, frameHeight, mirror, roi, 1.7);
+    drawExpandedLandmarkPolygon(ctx, face, RIGHT_BROW_LANDMARKS, frameWidth, frameHeight, mirror, roi, 1.7);
+    drawExpandedLandmarkPolygon(ctx, face, OUTER_LIP_LANDMARKS, frameWidth, frameHeight, mirror, roi, 1.45);
+    drawExpandedLandmarkPolygon(ctx, face, INNER_LIP_LANDMARKS, frameWidth, frameHeight, mirror, roi, 1.35);
+
+    const eyeDistance = Math.hypot(
+      face.anchors.rightEyeCenter.x - face.anchors.leftEyeCenter.x,
+      face.anchors.rightEyeCenter.y - face.anchors.leftEyeCenter.y
+    );
+    const nostrilRadius = clamp(eyeDistance * 0.055, 3, face.bounds.faceW * 0.048);
+    NOSTRIL_LANDMARKS.forEach((index) => {
+      const point = landmarkToPoint(face.landmarks, index, frameWidth, frameHeight, mirror, roi);
+      if (!point) {
+        return;
+      }
+
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, nostrilRadius, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  });
+
+  ctx.globalCompositeOperation = "source-over";
+}
+
+function skinFilterRoi(faces, frameWidth, frameHeight, maskBlur) {
+  let minX = frameWidth;
+  let minY = frameHeight;
+  let maxX = -1;
+  let maxY = -1;
+
+  faces.forEach(({ bounds }) => {
+    const padX = bounds.faceW * 0.18 + maskBlur;
+    const padTop = bounds.faceH * 0.22 + maskBlur;
+    const padBottom = bounds.faceH * 0.12 + maskBlur;
+    minX = Math.min(minX, Math.floor(bounds.faceMinX - padX));
+    maxX = Math.max(maxX, Math.ceil(bounds.faceMaxX + padX));
+    minY = Math.min(minY, Math.floor(bounds.faceMinY - padTop));
+    maxY = Math.max(maxY, Math.ceil(bounds.faceMaxY + padBottom));
+  });
+
+  const x = clamp(minX, 0, frameWidth - 1);
+  const y = clamp(minY, 0, frameHeight - 1);
+  const right = clamp(maxX, 0, frameWidth - 1);
+  const bottom = clamp(maxY, 0, frameHeight - 1);
+  return {
+    x,
+    y,
+    width: Math.max(0, right - x + 1),
+    height: Math.max(0, bottom - y + 1),
+  };
+}
+
+function drawSegmentationSkinBase(maskContext, segmentation, roi) {
+  const image = maskContext.createImageData(roi.width, roi.height);
+  const data = image.data;
+  let skinPixels = 0;
+
+  for (let localY = 0; localY < roi.height; localY += 1) {
+    const frameY = roi.y + localY;
+    for (let localX = 0; localX < roi.width; localX += 1) {
+      const frameX = roi.x + localX;
+      const category = segmentation.frameCategories[frameY * segmentation.frameWidth + frameX];
+      if (category !== SEGMENTATION_CATEGORY.faceSkin) {
+        continue;
+      }
+
+      const targetIndex = (localY * roi.width + localX) * 4;
+      data[targetIndex] = 255;
+      data[targetIndex + 1] = 255;
+      data[targetIndex + 2] = 255;
+      data[targetIndex + 3] = 255;
+      skinPixels += 1;
+    }
+  }
+
+  maskContext.putImageData(image, 0, 0);
+  return skinPixels;
+}
+
+function buildSkinAlphaMask(effectContext, faces, frameWidth, frameHeight, params) {
+  const roi = skinFilterRoi(faces, frameWidth, frameHeight, params.maskBlur);
+  if (!roi.width || !roi.height) {
+    return null;
+  }
+
+  const { maskCanvas, maskContext, limitCanvas, limitContext, blurCanvas, blurContext } = ensureSkinMaskScratch(
+    roi.width,
+    roi.height
+  );
+  maskContext.clearRect(0, 0, roi.width, roi.height);
+  limitContext.clearRect(0, 0, roi.width, roi.height);
+  blurContext.clearRect(0, 0, roi.width, roi.height);
+
+  const segmentation = {
+    ...effectContext.detections.segmentation,
+    frameWidth,
+  };
+  const canUseSegmentation =
+    segmentation.enabled && segmentation.frameCategories && segmentation.frameCategories.length >= frameWidth * frameHeight;
+
+  if (canUseSegmentation) {
+    drawSegmentationSkinBase(maskContext, segmentation, roi);
+    drawFaceLimitMask(limitContext, faces, frameWidth, frameHeight, effectContext.mirror, roi);
+    maskContext.globalCompositeOperation = "destination-in";
+    maskContext.drawImage(limitCanvas, 0, 0);
+    maskContext.globalCompositeOperation = "source-over";
+  } else {
+    drawFaceLimitMask(maskContext, faces, frameWidth, frameHeight, effectContext.mirror, roi);
+  }
+
+  drawFeatureExclusionMask(maskContext, faces, frameWidth, frameHeight, effectContext.mirror, roi);
+
+  if (params.maskBlur > 0 && "filter" in blurContext) {
+    blurContext.filter = `blur(${params.maskBlur}px)`;
+    blurContext.drawImage(maskCanvas, 0, 0);
+    blurContext.filter = "none";
+  } else {
+    blurContext.drawImage(maskCanvas, 0, 0);
+  }
+
+  const maskData = blurContext.getImageData(0, 0, roi.width, roi.height).data;
+  const alpha = new Float32Array(roi.width * roi.height);
+  let alphaSum = 0;
+
+  for (let index = 0; index < alpha.length; index += 1) {
+    const value = maskData[index * 4 + 3] / 255;
+    alpha[index] = value;
+    alphaSum += value;
+  }
+
+  if (alphaSum < 8) {
+    return null;
+  }
+
+  return {
+    alpha,
+    roi,
+  };
+}
+
+function spatialWeightsForRadius(radius) {
+  if (SPATIAL_WEIGHT_CACHE.has(radius)) {
+    return SPATIAL_WEIGHT_CACHE.get(radius);
+  }
+
+  const sigma = Math.max(1, radius * 0.72);
+  const weights = [];
+  for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+    for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+      weights.push({
+        offsetX,
+        offsetY,
+        weight: Math.exp(-(offsetX * offsetX + offsetY * offsetY) / (2 * sigma * sigma)),
+      });
+    }
+  }
+
+  SPATIAL_WEIGHT_CACHE.set(radius, weights);
+  return weights;
+}
+
+function bilateralSmoothRoi(sourceData, width, height, alpha, smoothStrength) {
+  const radius = smoothStrength > 0.62 ? 3 : 2;
+  const spatialWeights = spatialWeightsForRadius(radius);
+  const sigmaColor = 18 + smoothStrength * 30;
+  const colorDenominator = 2 * sigmaColor * sigmaColor;
+  const smoothed = new Float32Array(width * height * 3);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixelIndex = y * width + x;
+      const sourceIndex = pixelIndex * 4;
+
+      if (alpha[pixelIndex] <= 0.006) {
+        smoothed[pixelIndex * 3] = sourceData[sourceIndex];
+        smoothed[pixelIndex * 3 + 1] = sourceData[sourceIndex + 1];
+        smoothed[pixelIndex * 3 + 2] = sourceData[sourceIndex + 2];
+        continue;
+      }
+
+      const centerR = sourceData[sourceIndex];
+      const centerG = sourceData[sourceIndex + 1];
+      const centerB = sourceData[sourceIndex + 2];
+      let totalR = 0;
+      let totalG = 0;
+      let totalB = 0;
+      let totalWeight = 0;
+
+      spatialWeights.forEach(({ offsetX, offsetY, weight }) => {
+        const sampleX = x + offsetX;
+        const sampleY = y + offsetY;
+        if (sampleX < 0 || sampleX >= width || sampleY < 0 || sampleY >= height) {
+          return;
+        }
+
+        const samplePixelIndex = sampleY * width + sampleX;
+        if (alpha[samplePixelIndex] <= 0.04) {
+          return;
+        }
+
+        const sampleIndex = samplePixelIndex * 4;
+        const diffR = sourceData[sampleIndex] - centerR;
+        const diffG = sourceData[sampleIndex + 1] - centerG;
+        const diffB = sourceData[sampleIndex + 2] - centerB;
+        const colorWeight = Math.exp(-(diffR * diffR + diffG * diffG + diffB * diffB) / colorDenominator);
+        const finalWeight = weight * colorWeight;
+        totalR += sourceData[sampleIndex] * finalWeight;
+        totalG += sourceData[sampleIndex + 1] * finalWeight;
+        totalB += sourceData[sampleIndex + 2] * finalWeight;
+        totalWeight += finalWeight;
+      });
+
+      const targetIndex = pixelIndex * 3;
+      smoothed[targetIndex] = totalWeight ? totalR / totalWeight : centerR;
+      smoothed[targetIndex + 1] = totalWeight ? totalG / totalWeight : centerG;
+      smoothed[targetIndex + 2] = totalWeight ? totalB / totalWeight : centerB;
+    }
+  }
+
+  return smoothed;
+}
+
+function srgbToLinear(value) {
+  const normalized = value / 255;
+  return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgb(value) {
+  const clampedValue = clamp(value, 0, 1);
+  const normalized = clampedValue <= 0.0031308 ? clampedValue * 12.92 : 1.055 * clampedValue ** (1 / 2.4) - 0.055;
+  return clamp(Math.round(normalized * 255), 0, 255);
+}
+
+function labPivot(value) {
+  return value > 0.008856 ? Math.cbrt(value) : 7.787 * value + 16 / 116;
+}
+
+function inverseLabPivot(value) {
+  const cubed = value ** 3;
+  return cubed > 0.008856 ? cubed : (value - 16 / 116) / 7.787;
+}
+
+function rgbToLab(r, g, b) {
+  const linearR = srgbToLinear(r);
+  const linearG = srgbToLinear(g);
+  const linearB = srgbToLinear(b);
+  const x = (linearR * 0.4124564 + linearG * 0.3575761 + linearB * 0.1804375) / 0.95047;
+  const y = linearR * 0.2126729 + linearG * 0.7151522 + linearB * 0.072175;
+  const z = (linearR * 0.0193339 + linearG * 0.119192 + linearB * 0.9503041) / 1.08883;
+  const fx = labPivot(x);
+  const fy = labPivot(y);
+  const fz = labPivot(z);
+
+  return {
+    l: 116 * fy - 16,
+    a: 500 * (fx - fy),
+    b: 200 * (fy - fz),
+  };
+}
+
+function labToRgb(l, a, b) {
+  const fy = (l + 16) / 116;
+  const fx = fy + a / 500;
+  const fz = fy - b / 200;
+  const x = 0.95047 * inverseLabPivot(fx);
+  const y = inverseLabPivot(fy);
+  const z = 1.08883 * inverseLabPivot(fz);
+  const linearR = x * 3.2404542 + y * -1.5371385 + z * -0.4985314;
+  const linearG = x * -0.969266 + y * 1.8760108 + z * 0.041556;
+  const linearB = x * 0.0556434 + y * -0.2040259 + z * 1.0572252;
+
+  return {
+    r: linearToSrgb(linearR),
+    g: linearToSrgb(linearG),
+    b: linearToSrgb(linearB),
+  };
+}
+
+function adjustSkinToneLab(r, g, b, brightness, rednessReduction) {
+  const lab = rgbToLab(r, g, b);
+  lab.l = clamp(lab.l + brightness * 50, 0, 100);
+  if (lab.a > 0) {
+    lab.a *= 1 - clamp(rednessReduction * 2.4, 0, 0.55);
+  }
+  return labToRgb(lab.l, lab.a, lab.b);
+}
+
+function applySkinFilterToRoi(imageData, alpha, params) {
+  const { width, height, data } = imageData;
+  const needsSmoothing = params.smoothStrength > 0.001;
+  const smoothed = needsSmoothing ? bilateralSmoothRoi(data, width, height, alpha, params.smoothStrength) : null;
+  const detailPreservation = needsSmoothing ? params.detailPreservation : 0;
+
+  for (let pixelIndex = 0; pixelIndex < alpha.length; pixelIndex += 1) {
+    const maskAlpha = alpha[pixelIndex];
+    if (maskAlpha <= 0.006) {
+      continue;
+    }
+
+    const sourceIndex = pixelIndex * 4;
+    const smoothIndex = pixelIndex * 3;
+    const originalR = data[sourceIndex];
+    const originalG = data[sourceIndex + 1];
+    const originalB = data[sourceIndex + 2];
+    const smoothR = smoothed ? smoothed[smoothIndex] : originalR;
+    const smoothG = smoothed ? smoothed[smoothIndex + 1] : originalG;
+    const smoothB = smoothed ? smoothed[smoothIndex + 2] : originalB;
+    const detailLimit = 18;
+    const softenedR =
+      originalR * (1 - params.smoothStrength) +
+      smoothR * params.smoothStrength +
+      clamp(originalR - smoothR, -detailLimit, detailLimit) * detailPreservation;
+    const softenedG =
+      originalG * (1 - params.smoothStrength) +
+      smoothG * params.smoothStrength +
+      clamp(originalG - smoothG, -detailLimit, detailLimit) * detailPreservation;
+    const softenedB =
+      originalB * (1 - params.smoothStrength) +
+      smoothB * params.smoothStrength +
+      clamp(originalB - smoothB, -detailLimit, detailLimit) * detailPreservation;
+    const adjusted = adjustSkinToneLab(
+      clamp(softenedR, 0, 255),
+      clamp(softenedG, 0, 255),
+      clamp(softenedB, 0, 255),
+      params.brightness,
+      params.rednessReduction
+    );
+
+    data[sourceIndex] = clamp(Math.round(originalR * (1 - maskAlpha) + adjusted.r * maskAlpha), 0, 255);
+    data[sourceIndex + 1] = clamp(Math.round(originalG * (1 - maskAlpha) + adjusted.g * maskAlpha), 0, 255);
+    data[sourceIndex + 2] = clamp(Math.round(originalB * (1 - maskAlpha) + adjusted.b * maskAlpha), 0, 255);
+  }
+}
+
+function skinSofteningEffect(effectContext) {
+  const faces = effectContext.detections.face.trackedFaces;
+  if (!faces.length) {
+    return;
+  }
+
+  const params = readSkinFilterParams(effectContext.params);
+  if (
+    params.smoothStrength <= 0 &&
+    params.brightness <= 0 &&
+    params.rednessReduction <= 0
+  ) {
+    return;
+  }
+
+  const frameWidth = effectContext.frameBufferCanvas.width;
+  const frameHeight = effectContext.frameBufferCanvas.height;
+  const maskInfo = buildSkinAlphaMask(effectContext, faces, frameWidth, frameHeight, params);
+  if (!maskInfo) {
+    return;
+  }
+
+  const { roi, alpha } = maskInfo;
+  const roiImage = effectContext.frameBufferContext.getImageData(roi.x, roi.y, roi.width, roi.height);
+  applySkinFilterToRoi(roiImage, alpha, params);
+  effectContext.ctx.putImageData(roiImage, roi.x, roi.y);
 }
 
 function fallbackSquareHeadEffect(effectContext) {
@@ -835,14 +897,39 @@ export const effects = [
     run: clownNoseEffect,
   }),
   createEffect({
-    id: "mouthBeam",
+    id: "sunglasses",
     requiredDetections: ["face"],
-    run: mouthBeamEffect,
+    run: sunglassesEffect,
   }),
   createEffect({
-    id: "eatCake",
+    id: "roundGlasses",
     requiredDetections: ["face"],
-    run: eatCakeEffect,
+    run: roundGlassesEffect,
+  }),
+  createEffect({
+    id: "mustache",
+    requiredDetections: ["face"],
+    run: mustacheEffect,
+  }),
+  createEffect({
+    id: "crown",
+    requiredDetections: ["face"],
+    run: crownEffect,
+  }),
+  createEffect({
+    id: "partyHat",
+    requiredDetections: ["face"],
+    run: partyHatEffect,
+  }),
+  createEffect({
+    id: "laserEyes",
+    requiredDetections: ["face"],
+    run: laserEyesEffect,
+  }),
+  createEffect({
+    id: "skinSoftening",
+    requiredDetections: ["face", "segmentation"],
+    run: skinSofteningEffect,
   }),
   createEffect({
     id: "squareHead",
